@@ -70,9 +70,9 @@ class TrashDetector:
     - 6개 항목의 '개수'만 반환
     """
     def __init__(self, model: str = "gpt-4o"):
-        # api_key = os.getenv("OPENAI_API_KEY")
+        api_key = os.getenv("OPENAI_API_KEY")
         ################# GPT API KEY 값 넣는 곳!!#################
-        api_key=""
+        # api_key=""
         
         if not api_key:
             raise DetectionError("OPENAI_API_KEY not set")
