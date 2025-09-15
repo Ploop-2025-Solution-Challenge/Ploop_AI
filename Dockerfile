@@ -1,14 +1,15 @@
 # 1. Python 기반 slim 이미지 사용
-FROM python:3.11-slim
+FROM python:3.9-slim
 
 # 2. 작업 디렉토리 설정
 WORKDIR /app
 
 # 3. 시스템 패키지 설치
+# libgl1-mesa-glx → libgl1 로 교체
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
