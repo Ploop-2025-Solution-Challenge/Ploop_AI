@@ -44,3 +44,6 @@ src/main/generated
 
 .idea
 .terraform/
+
+### Python ###
+__pycache__/
