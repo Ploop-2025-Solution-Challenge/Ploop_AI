@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 
-# .env 파일 로드
+# .env 로드
 load_dotenv()
 
 MYSQL_HOST = os.getenv("MYSQL_HOST")
@@ -20,30 +20,47 @@ def get_mysql_connection():
         database=MYSQL_DATABASE
     )
 
-def test_fetch_tables():
+def test_fetch_user_data():
     conn = get_mysql_connection()
     try:
-        tables = [
-            "members",
-            "member_location_preference",
-            "member_motivation",
-            "member_matches",
-            "waiting_queue"
-        ]
+        # user 全부 + preference (없으면 NULL) 포함
+        query = """
+        SELECT u.id AS user_id,
+               u.region,
+               u.motivation,
+               u.difficulty,
+               p.preference
+        FROM user u
+        LEFT JOIN user_location_preferences p
+          ON u.id = p.user_id
+        ORDER BY u.id;
+        """
+        df = pd.read_sql(query, conn)
 
-        for table in tables:
-            print(f"\n===== {table} =====")
-            try:
-                df = pd.read_sql(f"SELECT * FROM {table} LIMIT 10", conn)
-                if df.empty:
-                    print("(No data)")
-                else:
-                    print(df)
-            except Exception as e:
-                print(f"Error reading table {table}: {e}")
+        if df.empty:
+            print("⚠️ No data in tables.")
+            return
+
+        # 핵심: NA 그룹을 버리지 않도록 dropna=False
+        # user_id 기준으로 모으고, user의 단일 속성은 first로 집계
+        out = (
+            df.groupby("user_id", dropna=False)
+              .agg(
+                  region=("region", "first"),
+                  motivation=("motivation", "first"),
+                  difficulty=("difficulty", "first"),
+                  preference=("preference", lambda s: [v for v in s if pd.notnull(v)])
+              )
+              .reset_index()
+              .sort_values("user_id")
+        )
+
+        # preference가 전부 NULL이었던 유저는 위 lambda로 []가 됨
+        print("\n===== User Data with Preferences (NULL 허용) =====")
+        print(out.to_string(index=False))
 
     finally:
         conn.close()
 
 if __name__ == "__main__":
-    test_fetch_tables()
+    test_fetch_user_data()

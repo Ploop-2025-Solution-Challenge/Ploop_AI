@@ -29,6 +29,9 @@ MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "member_matching_db")
 
 
+# ---------------------------
+# Pinecone / MySQL 초기화
+# ---------------------------
 def init_pinecone():
     """Pinecone v3 서비스 초기화 및 인덱스 연결"""
     try:
@@ -44,6 +47,7 @@ def get_mysql_connection():
     try:
         connection = mysql.connector.connect(
             host=MYSQL_HOST,
+            port=3306,
             user=MYSQL_USER,
             password=MYSQL_PASSWORD,
             database=MYSQL_DATABASE,
@@ -54,325 +58,294 @@ def get_mysql_connection():
         raise
 
 
-def prepare_text_for_embedding(row):
-    """멤버 데이터로부터 임베딩용 텍스트 생성"""
-    text = f"위치: {row['location']}, 선호지역: {row['preferred_location']}, "
-    text += f"동기: {row['motivation']}, 관심사: {row['interests']}"
-    return text
-
-
-def save_embeddings_to_pinecone(member_ids, embeddings, pinecone_index):
-    """생성된 임베딩을 Pinecone에 저장"""
-    vectors_to_upsert = []
-    for i, embedding in enumerate(embeddings):
-        member_id = str(member_ids[i])
-        vectors_to_upsert.append(
-            {
-                "id": member_id,
-                "values": embedding.tolist(),
-                "metadata": {"updated_at": datetime.now().isoformat()},
-            }
-        )
-
-    batch_size = 100
-    for i in range(0, len(vectors_to_upsert), batch_size):
-        batch = vectors_to_upsert[i : i + batch_size]
-        pinecone_index.upsert(vectors=batch)
-
-    logger.info(f"Saved {len(member_ids)} embeddings to Pinecone")
-
-
-def get_user_data(user_id, connection):
-    """특정 사용자의 데이터를 MySQL에서 가져옴"""
-    cursor = connection.cursor(dictionary=True)
-    user_query = """
-    SELECT m.*, l.preferred_location, mo.motivation, m.interests 
-    FROM members m 
-    JOIN member_location_preference l ON m.member_id = l.member_id 
-    JOIN member_motivation mo ON m.member_id = mo.member_id 
-    WHERE m.member_id = %s
+# ---------------------------
+# MySQL 로딩 (실제 스키마 기준)
+# ---------------------------
+def load_user_data(connection):
     """
-    cursor.execute(user_query, (user_id,))
-    user_data = cursor.fetchone()
-    cursor.close()
+    user + user_location_preferences 데이터를 통합해
+    user별로 preference 리스트를 만든 DataFrame을 반환.
+    NULL 값도 보존.
+    """
+    query = """
+    SELECT u.id AS user_id,
+           u.region,
+           u.motivation,
+           u.difficulty,
+           p.preference
+      FROM user u
+ LEFT JOIN user_location_preferences p
+        ON u.id = p.user_id
+     ORDER BY u.id;
+    """
+    df = pd.read_sql(query, connection)
+
+    if df.empty:
+        logger.warning("⚠️ No user data found.")
+        return pd.DataFrame()
+
+    user_data = (
+        df.groupby("user_id", dropna=False)
+          .agg(
+              region=("region", "first"),
+              motivation=("motivation", "first"),
+              difficulty=("difficulty", "first"),
+              preference=("preference", lambda s: [v for v in s if pd.notnull(v)])
+          )
+          .reset_index()
+          .sort_values("user_id")
+    )
     return user_data
 
 
-# 나머지 함수(create_pair_matches, save_matches_to_db, update_waiting_queue)는 그대로 유지
+def get_single_user(user_id: int, connection):
+    """단일 유저(user + preferences) 로드 (NULL 허용, preference는 리스트)"""
+    query = """
+    SELECT u.id AS user_id,
+           u.region,
+           u.motivation,
+           u.difficulty,
+           p.preference
+      FROM user u
+ LEFT JOIN user_location_preferences p
+        ON u.id = p.user_id
+     WHERE u.id = %s
+     ORDER BY u.id;
+    """
+    df = pd.read_sql(query, connection, params=[user_id])
+    if df.empty:
+        return None
 
-def create_pair_matches(similarity_matrix, member_data):
-    """각 멤버마다 정확히 2명과 매칭하는 알고리즘"""
-    num_members = similarity_matrix.shape[0]
-    available_members = set(range(num_members))
-    matches = {}
-    waiting_list = []
+    prefs = [v for v in df["preference"] if pd.notnull(v)]
+    row = df.iloc[0]
+    return {
+        "user_id": int(row["user_id"]),
+        "region": row["region"],
+        "motivation": row["motivation"],
+        "difficulty": row["difficulty"],
+        "preference": prefs,
+    }
 
 
+# ---------------------------
+# 임베딩 텍스트 & Pinecone 업서트
+# ---------------------------
+def prepare_text_for_embedding(row):
+    """유저 데이터로부터 임베딩용 텍스트 생성"""
+    prefs = ", ".join([str(p) for p in row["preference"]]) if row["preference"] else "없음"
+    text = (
+        f"지역: {row['region'] if pd.notnull(row['region']) else '없음'}, "
+        f"동기: {row['motivation'] if pd.notnull(row['motivation']) else '없음'}, "
+        f"난이도: {row['difficulty'] if pd.notnull(row['difficulty']) else '없음'}, "
+        f"선호지역: {prefs}"
+    )
+    return text
+
+
+def save_embeddings_to_pinecone(ids, embeddings, pinecone_index):
+    """생성된 임베딩을 Pinecone에 저장 (v3 dict 포맷)"""
+    vectors_to_upsert = []
+    for i, emb in enumerate(embeddings):
+        vectors_to_upsert.append(
+            {
+                "id": str(ids[i]),
+                "values": emb.tolist(),
+                "metadata": {"updated_at": datetime.now().isoformat()},
+            }
+        )
+    batch_size = 100
+    for i in range(0, len(vectors_to_upsert), batch_size):
+        pinecone_index.upsert(vectors=vectors_to_upsert[i:i+batch_size])
+
+    logger.info(f"Saved {len(ids)} embeddings to Pinecone")
+
+
+# ---------------------------
+# 매칭 / 저장 유틸
+# ---------------------------
+def create_pair_matches(similarity_matrix, user_df):
+    """
+    각 유저를 최대 1명과만 매칭하는 알고리즘 (그리디, disjoint pairs).
+    반환: pairs(list of tuples[(i_idx, j_idx, score), ...])
+    """
+    num = similarity_matrix.shape[0]
     all_pairs = []
-    for i in range(num_members):
-        for j in range(i+1, num_members):
-            all_pairs.append((i, j, similarity_matrix[i][j]))
-
+    for i in range(num):
+        for j in range(i + 1, num):
+            all_pairs.append((i, j, float(similarity_matrix[i, j])))
     all_pairs.sort(key=lambda x: x[2], reverse=True)
 
-
-    match_count = {i: 0 for i in range(num_members)}
-
+    used = set()
+    pairs = []
 
     for i, j, score in all_pairs:
-        if i in available_members and j in available_members and match_count[i] < 2 and match_count[j] < 2:
-            if i not in matches:
-                matches[i] = []
-            matches[i].append((j, score))
-            match_count[i] += 1
+        if i not in used and j not in used:
+            pairs.append((i, j, score))
+            used.add(i)
+            used.add(j)
 
-            if j not in matches:
-                matches[j] = []
-            matches[j].append((i, score))
-            match_count[j] += 1
-
-            if match_count[i] == 2:
-                available_members.remove(i)
-            if match_count[j] == 2:
-                available_members.remove(j)
-
-    for member_idx in range(num_members):
-        if match_count[member_idx] < 2:
-            member_id = member_data.iloc[member_idx]['member_id']
-            waiting_list.append(member_id)
-
-    return matches, waiting_list
+    # 매칭되지 않은 유저는 더 이상 고려하지 않음(요구사항)
+    return pairs
 
 
-def save_matches_to_db(matches, member_data, connection):
-    """매칭 결과를 MySQL에 저장"""
+def save_matches_to_db(pairs, user_df, connection):
+    """
+    1:1 매칭 결과를 team 테이블에 저장.
+    - 같은 주에 이미 팀이 있는 유저는 제외
+    - (user_id_1, user_id_2) 정규화 후 중복 저장 방지
+    """
     cursor = connection.cursor()
 
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    year, week, _ = datetime.now().isocalendar()
+    week_str = f"{year}-W{week:02d}"
 
-    cursor.execute("UPDATE member_matches SET status = 'inactive' WHERE status = 'active'")
-
-    match_count = 0
-    for idx, match_list in matches.items():
-        member_id = member_data.iloc[idx]['member_id']
-
-        for match_idx, score in match_list:
-            matched_member_id = member_data.iloc[match_idx]['member_id']
-
-            query = """
-            INSERT INTO member_matches 
-            (member_id, matched_member_id, similarity_score, status) 
-            VALUES (%s, %s, %s, 'active')
-            """
-            cursor.execute(query, (member_id, matched_member_id, float(score)))
-            match_count += 1
-
-    connection.commit()
-    cursor.close()
-    logger.info(f"Saved {match_count} matches to database")
-
-
-def update_waiting_queue(waiting_list, member_data, connection):
-    """대기열 정보를 MySQL에 업데이트"""
-    cursor = connection.cursor()
-
-    cursor.execute("UPDATE waiting_queue SET status = 'processed' WHERE status = 'waiting'")
-
-    for member_id in waiting_list:
-        query = """
-        INSERT INTO waiting_queue (member_id, status) 
-        VALUES (%s, 'waiting')
-        ON DUPLICATE KEY UPDATE status = 'waiting', joined_at = CURRENT_TIMESTAMP
+    cursor.execute(
         """
-        cursor.execute(query, (member_id,))
+        SELECT user_id_1, user_id_2
+          FROM team
+         WHERE week = %s
+        """,
+        (week_str,),
+    )
+    rows = cursor.fetchall()
+    already_paired = set()
+    for (u1, u2) in rows:
+        if u1 is not None:
+            already_paired.add(int(u1))
+        if u2 is not None:
+            already_paired.add(int(u2))
+
+    inserted_pairs = set()
+    n = 0
+
+    for i_idx, j_idx, _score in pairs:
+        uid1 = int(user_df.iloc[i_idx]["user_id"])
+        uid2 = int(user_df.iloc[j_idx]["user_id"])
+        if uid1 in already_paired or uid2 in already_paired:
+            continue
+
+        a, b = (uid1, uid2) if uid1 < uid2 else (uid2, uid1)
+        if (a, b) in inserted_pairs:
+            continue
+
+        cursor.execute(
+            """
+            INSERT INTO team (created_at, user_id_1, user_id_2, week)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (created_at, a, b, week_str),
+        )
+        inserted_pairs.add((a, b))
+        already_paired.add(a)
+        already_paired.add(b)
+        n += 1
 
     connection.commit()
     cursor.close()
-    logger.info(f"Updated waiting queue with {len(waiting_list)} members")
-def weekly_matching_process(connection=None, pinecone_index=None):
-    """일주일에 한 번 실행되는 전체 매칭 프로세스"""
-    logger.info(f"주간 매칭 프로세스 시작: {datetime.now()}")
+    logger.info(f"Saved {n} teams to database (week={week_str})")
 
-    close_connection = False
+
+# ---------------------------
+# 주간(또는 즉시) 매칭 프로세스
+# ---------------------------
+def weekly_matching_process(connection=None, pinecone_index=None):
+    """일정과 무관하게 호출하면 즉시 실행됨"""
+    logger.info(f"매칭 프로세스 시작: {datetime.now()}")
+
+    close_conn = False
     if connection is None:
         connection = get_mysql_connection()
-        close_connection = True
-
+        close_conn = True
     if pinecone_index is None:
         pinecone_index = init_pinecone()
 
     try:
-        members_df = pd.read_sql(
-            "SELECT * FROM members WHERE status = 'active'", connection
-        )
-        location_prefs_df = pd.read_sql(
-            "SELECT * FROM member_location_preference", connection
-        )
-        motivation_df = pd.read_sql("SELECT * FROM member_motivation", connection)
+        user_df = load_user_data(connection)
+        if user_df.empty:
+            logger.warning("No users to process.")
+            return
 
-        waiting_queue_df = pd.read_sql(
-            "SELECT * FROM waiting_queue WHERE status = 'waiting'", connection
-        )
-
-        member_data = pd.merge(members_df, location_prefs_df, on="member_id")
-        member_data = pd.merge(member_data, motivation_df, on="member_id")
-
-        logger.info(f"Processing {len(member_data)} members for matching")
-
-        member_data["embedding_text"] = member_data.apply(
-            prepare_text_for_embedding, axis=1
-        )
+        user_df["embedding_text"] = user_df.apply(prepare_text_for_embedding, axis=1)
 
         model = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
-        embeddings = model.encode(member_data["embedding_text"].tolist())
+        embeddings = model.encode(user_df["embedding_text"].tolist())
 
-        # 임베딩을 Pinecone에 저장
-        save_embeddings_to_pinecone(
-            member_data["member_id"].tolist(), embeddings, pinecone_index
-        )
+        save_embeddings_to_pinecone(user_df["user_id"].tolist(), embeddings, pinecone_index)
 
-        # 코사인 유사도 계산
-        similarity_matrix = cosine_similarity(embeddings)
+        sim = cosine_similarity(embeddings)
+        pairs = create_pair_matches(sim, user_df)
 
-        # 매칭 알고리즘 실행
-        matches, waiting_list = create_pair_matches(similarity_matrix, member_data)
+        save_matches_to_db(pairs, user_df, connection)
 
-        # 매칭 결과 저장
-        save_matches_to_db(matches, member_data, connection)
-
-        # 대기열 업데이트
-        update_waiting_queue(waiting_list, member_data, connection)
-
-        logger.info(f"주간 매칭 프로세스 완료: {datetime.now()}")
+        logger.info(f"매칭 프로세스 완료: {datetime.now()}")
     except Exception as e:
-        logger.error(f"주간 매칭 프로세스 오류: {str(e)}")
+        logger.error(f"매칭 프로세스 오류: {str(e)}")
         raise
     finally:
-        if close_connection and connection:
+        if close_conn and connection:
             connection.close()
 
-# 새 유저 등록 처리 함수
+
+# ---------------------------
+# 신규 유저 등록 처리
+# ---------------------------
 def process_new_user(new_user_id, mysql_connection=None, pinecone_index=None):
-    """새로운 유저 등록 시 처리 로직"""
+    """
+    요구사항에 따라 waiting(대기열) 사용 없음.
+    - 신규 유저 임베딩 생성 및 Pinecone에 업서트만 수행
+    - 즉시 매칭 시도/대기열 편입 없음
+    """
     logger.info(f"새 유저 처리 시작: {new_user_id}, {datetime.now()}")
 
-    # 연결이 전달되지 않은 경우 새로 생성
-    close_connection = False
+    close_conn = False
     if mysql_connection is None:
         mysql_connection = get_mysql_connection()
-        close_connection = True
-
+        close_conn = True
     if pinecone_index is None:
         pinecone_index = init_pinecone()
 
     try:
-        cursor = mysql_connection.cursor(dictionary=True)
+        # 새 유저 데이터 로드
+        new_user = get_single_user(new_user_id, mysql_connection)
+        if not new_user:
+            raise ValueError(f"user {new_user_id} not found")
 
-        # 대기열 확인
-        cursor.execute("SELECT member_id FROM waiting_queue WHERE status = 'waiting' ORDER BY joined_at ASC")
-        waiting_members = cursor.fetchall()
+        # 새 유저 임베딩 생성 & 업서트
+        model = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
+        emb_text = prepare_text_for_embedding(new_user)
+        new_emb = model.encode([emb_text])[0]
 
-        if not waiting_members:
-            # 대기열이 비어있으면 새 유저를 대기열에 추가
-            # 새 유저의 임베딩 생성 및 Pinecone에 저장
-            new_user_data = get_user_data(new_user_id, mysql_connection)
-            model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
-            embedding_text = prepare_text_for_embedding(new_user_data)
-            new_user_embedding = model.encode([embedding_text])[0]
+        pinecone_index.upsert(
+            vectors=[{
+                "id": str(new_user_id),
+                "values": new_emb.tolist(),
+                "metadata": {"updated_at": datetime.now().isoformat()}
+            }]
+        )
 
-            # Pinecone에 임베딩 저장
-            pinecone_index.upsert([(str(new_user_id), new_user_embedding.tolist(),
-                                    {"updated_at": datetime.now().isoformat()})])
-
-            # 대기열에 추가
-            query = "INSERT INTO waiting_queue (member_id, status) VALUES (%s, 'waiting')"
-            cursor.execute(query, (new_user_id,))
-            mysql_connection.commit()
-
-            logger.info(f"새 유저 {new_user_id}가 대기열에 추가되었습니다.")
-        else:
-            # 대기열에 사람이 있으면 가장 오래 기다린 사람과 매칭
-            waiting_member_id = waiting_members[0]['member_id']
-
-            # 새 유저 데이터 가져오기
-            new_user_data = get_user_data(new_user_id, mysql_connection)
-
-            # 새 유저의 임베딩 생성
-            model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
-            embedding_text = prepare_text_for_embedding(new_user_data)
-            new_user_embedding = model.encode([embedding_text])[0]
-
-            # Pinecone에 새 유저 임베딩 저장
-            pinecone_index.upsert([(str(new_user_id), new_user_embedding.tolist(),
-                                    {"updated_at": datetime.now().isoformat()})])
-
-            # Pinecone에서 대기 유저의 임베딩 가져오기
-            query_response = pinecone_index.query(
-                vector=new_user_embedding.tolist(),
-                filter={"id": str(waiting_member_id)},
-                top_k=1,
-                include_values=True
-            )
-
-            # 유사도 계산
-            if query_response.matches:
-                similarity = query_response.matches[0].score
-            else:
-                # Pinecone에 대기 유저의 임베딩이 없는 경우
-                waiting_user_data = get_user_data(waiting_member_id, mysql_connection)
-                waiting_embedding_text = prepare_text_for_embedding(waiting_user_data)
-                waiting_user_embedding = model.encode([waiting_embedding_text])[0]
-
-                # Pinecone에 대기 유저 임베딩 저장
-                pinecone_index.upsert([(str(waiting_member_id), waiting_user_embedding.tolist(),
-                                        {"updated_at": datetime.now().isoformat()})])
-
-                # NumPy로 코사인 유사도 계산
-                similarity = np.dot(new_user_embedding, waiting_user_embedding) / (
-                        np.linalg.norm(new_user_embedding) * np.linalg.norm(waiting_user_embedding))
-
-            # 매칭 정보 저장
-            match_query = """
-            INSERT INTO member_matches 
-            (member_id, matched_member_id, similarity_score, status) 
-            VALUES (%s, %s, %s, 'active'), (%s, %s, %s, 'active')
-            """
-            cursor.execute(match_query,
-                           (new_user_id, waiting_member_id, float(similarity),
-                            waiting_member_id, new_user_id, float(similarity)))
-
-            # 대기열에서 매칭된 유저 제거
-            cursor.execute("UPDATE waiting_queue SET status = 'matched' WHERE member_id = %s", (waiting_member_id,))
-            mysql_connection.commit()
-
-            logger.info(f"새 유저 {new_user_id}가 대기 유저 {waiting_member_id}와 매칭되었습니다. 유사도: {similarity}")
-
-        cursor.close()
+        logger.info(f"새 유저 {new_user_id} 임베딩 저장 완료 (waiting 미사용)")
         logger.info(f"새 유저 처리 완료: {new_user_id}, {datetime.now()}")
     except Exception as e:
         logger.error(f"새 유저 처리 오류: {str(e)}")
         raise
     finally:
-        if close_connection and mysql_connection:
+        if close_conn and mysql_connection:
             mysql_connection.close()
 
 
+# ---------------------------
+# 스케줄러 (원하면 사용)
+# ---------------------------
 def setup_scheduler():
-    """일주일에 한 번 매칭을 실행하는 스케줄러 설정"""
     logger.info("스케줄러 설정 시작")
-
     schedule.every().monday.at("02:00").do(weekly_matching_process)
     logger.info("매주 월요일 02:00에 매칭 실행 예약됨")
-
     while True:
         schedule.run_pending()
         time.sleep(60)
 
+
 if __name__ == "__main__":
-    logger.info("매처 모듈 테스트 시작")
-    try:
-        pinecone_idx = init_pinecone()
-        mysql_conn = get_mysql_connection()
-        weekly_matching_process(mysql_conn, pinecone_idx)
-        mysql_conn.close()
-    except Exception as e:
-        logger.error(f"테스트 실행 오류: {str(e)}")
+    # 스케줄 없이 즉시 실행도 가능:
+    weekly_matching_process()
