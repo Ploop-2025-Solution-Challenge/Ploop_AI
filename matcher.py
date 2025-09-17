@@ -262,9 +262,14 @@ def weekly_matching_process(connection=None, pinecone_index=None):
 # 스케줄러 (원하면 사용)
 # ---------------------------
 def setup_scheduler():
-    print("스케줄러 설정 시작")
-    schedule.every().monday.at("02:00").do(weekly_matching_process)
-    print("매주 월요일 02:00에 매칭 실행 예약됨")
+    # ✅ 한국 시간대(KST) 강제 적용
+    os.environ["TZ"] = "Asia/Seoul"
+    time.tzset()
+
+    print("스케줄러 설정 시작 (Asia/Seoul)")
+    schedule.every().monday.at("02:50").do(weekly_matching_process)  # 한국 시간 월요일 02:50
+    print("매주 월요일 02:50 (KST)에 매칭 실행 예약됨")
+
     while True:
         schedule.run_pending()
         time.sleep(60)

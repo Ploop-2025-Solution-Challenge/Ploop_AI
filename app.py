@@ -28,7 +28,7 @@ from matcher import (
     # process_new_user, # ⬅️ process_new_user 사용 안 함 (주석)
     init_pinecone,
     get_mysql_connection,
-    # setup_scheduler,            # ⬅️ 스케줄러 사용 안 함 (주석)
+    setup_scheduler,            # ⬅️ 스케줄러 사용 안 함 (주석)
     weekly_matching_process,       # 매칭을 POST에서만 실행
 )
 # import threading               # ⬅️ 스케줄러 스레드 사용 안 함 (주석)
@@ -39,7 +39,7 @@ from google_route import handle_compute, invalid_json_response
 
 # GPT기반 탐지 모듈
 from trash_detection import TrashDetector, DetectionError
-
+import threading
 app = FastAPI(title="Trash Routing & Detection Server", version="2.0.0")
 
 app.add_middleware(
@@ -61,18 +61,15 @@ class ImageUrlRequest(BaseModel):
 class NewUserRequest(BaseModel):
     user_id: int
 
-# -----------------------------
-# 앱 시작 시 스케줄러 동작 제거
-# -----------------------------
-# @app.on_event("startup")
-# async def startup_event():
-#     # Pinecone 초기화 (필요 시)
-#     init_pinecone()
-#
-#     # 스케줄러를 별도 스레드로 실행 (사용 안 함)
-#     scheduler_thread = threading.Thread(target=setup_scheduler)
-#     scheduler_thread.daemon = True
-#     scheduler_thread.start()
+@app.on_event("startup")
+async def startup_event():
+    # Pinecone 초기화 (필요 시)
+    init_pinecone()
+
+    # 스케줄러를 별도 스레드로 실행 
+    scheduler_thread = threading.Thread(target=setup_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
 
 # @app.post("/api/new_user")
 # async def handle_new_user(request: NewUserRequest):
