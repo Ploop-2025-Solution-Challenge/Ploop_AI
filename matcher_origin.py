@@ -261,57 +261,6 @@ def weekly_matching_process(connection=None, pinecone_index=None):
 # ---------------------------
 # 스케줄러 (원하면 사용)
 # ---------------------------
-
-def reset_matching_tables(connection):
-    """
-    team, team_mission, user_mission 테이블을 싹 초기화합니다.
-    FK 제약을 고려해 일시적으로 외래키 체크를 비활성화한 뒤 TRUNCATE 합니다.
-    """
-    cursor = connection.cursor()
-    try:
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-        # 의존관계 상 user_mission -> team_mission -> team 순으로 지우는 게 안전하지만,
-        # FK 체크를 끄므로 순서는 크게 상관없습니다.
-        for table in ["user_mission", "team_mission", "team"]:
-            cursor.execute(f"TRUNCATE TABLE `{table}`")
-        cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-        connection.commit()
-        print("✅ Tables reset: user_mission, team_mission, team")
-    except Exception as e:
-        connection.rollback()
-        print(f"❌ Failed to reset tables: {e}")
-        raise
-    finally:
-        cursor.close()
-
-def reset_and_run_matching():
-    """
-    1) MySQL 연결
-    2) team, team_mission, user_mission 초기화
-    3) weekly_matching_process 실행
-    """
-    print(f"[JOB] reset_and_run_matching 시작: {datetime.now()}")
-    mysql_conn = None
-    pinecone_idx = None
-    try:
-        mysql_conn = get_mysql_connection()
-        pinecone_idx = init_pinecone()
-
-        # 1) 초기화
-        reset_matching_tables(mysql_conn)
-
-        # 2) 매칭 실행
-        weekly_matching_process(connection=mysql_conn, pinecone_index=pinecone_idx)
-        print(f"[JOB] reset_and_run_matching 완료: {datetime.now()}")
-    except Exception as e:
-        print(f"[JOB] reset_and_run_matching 실패: {e}")
-        # 필요 시 알림/로깅 확장
-    finally:
-        try:
-            if mysql_conn:
-                mysql_conn.close()
-        except:
-            pass
             
 def setup_scheduler():
     # ✅ 한국 시간대(KST) 강제 적용
@@ -319,9 +268,8 @@ def setup_scheduler():
     time.tzset()
 
     print("스케줄러 설정 시작 (Asia/Seoul)")
-    # 기존: schedule.every().monday.at("09:00").do(weekly_matching_process)
-    schedule.every().thursday.at("03:30").do(reset_and_run_matching)
-    print("매주 월요일 09:00 (KST)에 [초기화 → 매칭] 실행 예약됨")
+    schedule.every().monday.at("09:00").do(weekly_matching_process)  # 한국 시간 월요일 09:00
+    print("매주 월요일 09:00 (KST)에 매칭 실행 예약됨")
 
     while True:
         schedule.run_pending()
