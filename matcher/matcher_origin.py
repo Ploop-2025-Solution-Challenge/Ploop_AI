@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
-from pinecone import Pinecone
+import pinecone
 import schedule
 import time
 from datetime import datetime
@@ -13,15 +13,22 @@ import logging
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("matcher.log"), logging.StreamHandler()],
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("matcher.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger("matcher")
 
+
 load_dotenv()
 
+
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT","us-east-1")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "member-embeddings")
+
 
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_USER = os.getenv("MYSQL_USER", "root")
@@ -30,10 +37,11 @@ MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "member_matching_db")
 
 
 def init_pinecone():
-    """Pinecone v3 서비스 초기화 및 인덱스 연결"""
+    """Pinecone 서비스 초기화 및 인덱스 연결"""
     try:
-        pc = Pinecone(api_key=PINECONE_API_KEY)
-        return pc.Index(PINECONE_INDEX)
+        pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+
+        return pinecone.Index(PINECONE_INDEX)
     except Exception as e:
         logger.error(f"Failed to initialize Pinecone: {str(e)}")
         raise
@@ -46,7 +54,7 @@ def get_mysql_connection():
             host=MYSQL_HOST,
             user=MYSQL_USER,
             password=MYSQL_PASSWORD,
-            database=MYSQL_DATABASE,
+            database=MYSQL_DATABASE
         )
         return connection
     except Exception as e:
@@ -64,19 +72,15 @@ def prepare_text_for_embedding(row):
 def save_embeddings_to_pinecone(member_ids, embeddings, pinecone_index):
     """생성된 임베딩을 Pinecone에 저장"""
     vectors_to_upsert = []
+
     for i, embedding in enumerate(embeddings):
         member_id = str(member_ids[i])
-        vectors_to_upsert.append(
-            {
-                "id": member_id,
-                "values": embedding.tolist(),
-                "metadata": {"updated_at": datetime.now().isoformat()},
-            }
-        )
+        vectors_to_upsert.append((member_id, embedding.tolist(), {"updated_at": datetime.now().isoformat()}))
+
 
     batch_size = 100
     for i in range(0, len(vectors_to_upsert), batch_size):
-        batch = vectors_to_upsert[i : i + batch_size]
+        batch = vectors_to_upsert[i:i+batch_size]
         pinecone_index.upsert(vectors=batch)
 
     logger.info(f"Saved {len(member_ids)} embeddings to Pinecone")
@@ -97,8 +101,6 @@ def get_user_data(user_id, connection):
     cursor.close()
     return user_data
 
-
-# 나머지 함수(create_pair_matches, save_matches_to_db, update_waiting_queue)는 그대로 유지
 
 def create_pair_matches(similarity_matrix, member_data):
     """각 멤버마다 정확히 2명과 매칭하는 알고리즘"""
@@ -188,6 +190,7 @@ def update_waiting_queue(waiting_list, member_data, connection):
     connection.commit()
     cursor.close()
     logger.info(f"Updated waiting queue with {len(waiting_list)} members")
+
 def weekly_matching_process(connection=None, pinecone_index=None):
     """일주일에 한 번 실행되는 전체 매칭 프로세스"""
     logger.info(f"주간 매칭 프로세스 시작: {datetime.now()}")
@@ -201,34 +204,24 @@ def weekly_matching_process(connection=None, pinecone_index=None):
         pinecone_index = init_pinecone()
 
     try:
-        members_df = pd.read_sql(
-            "SELECT * FROM members WHERE status = 'active'", connection
-        )
-        location_prefs_df = pd.read_sql(
-            "SELECT * FROM member_location_preference", connection
-        )
+        members_df = pd.read_sql("SELECT * FROM members WHERE status = 'active'", connection)
+        location_prefs_df = pd.read_sql("SELECT * FROM member_location_preference", connection)
         motivation_df = pd.read_sql("SELECT * FROM member_motivation", connection)
 
-        waiting_queue_df = pd.read_sql(
-            "SELECT * FROM waiting_queue WHERE status = 'waiting'", connection
-        )
+        waiting_queue_df = pd.read_sql("SELECT * FROM waiting_queue WHERE status = 'waiting'", connection)
 
-        member_data = pd.merge(members_df, location_prefs_df, on="member_id")
-        member_data = pd.merge(member_data, motivation_df, on="member_id")
+        member_data = pd.merge(members_df, location_prefs_df, on='member_id')
+        member_data = pd.merge(member_data, motivation_df, on='member_id')
 
         logger.info(f"Processing {len(member_data)} members for matching")
 
-        member_data["embedding_text"] = member_data.apply(
-            prepare_text_for_embedding, axis=1
-        )
+        member_data['embedding_text'] = member_data.apply(prepare_text_for_embedding, axis=1)
 
-        model = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
-        embeddings = model.encode(member_data["embedding_text"].tolist())
+        model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
+        embeddings = model.encode(member_data['embedding_text'].tolist())
 
         # 임베딩을 Pinecone에 저장
-        save_embeddings_to_pinecone(
-            member_data["member_id"].tolist(), embeddings, pinecone_index
-        )
+        save_embeddings_to_pinecone(member_data['member_id'].tolist(), embeddings, pinecone_index)
 
         # 코사인 유사도 계산
         similarity_matrix = cosine_similarity(embeddings)
@@ -366,6 +359,7 @@ def setup_scheduler():
     while True:
         schedule.run_pending()
         time.sleep(60)
+
 
 if __name__ == "__main__":
     logger.info("매처 모듈 테스트 시작")

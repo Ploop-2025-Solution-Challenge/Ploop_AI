@@ -47,3 +47,5 @@ src/main/generated
 
 ### Python ###
 __pycache__/
+.env
+matcher.log
