@@ -313,14 +313,14 @@ def reset_and_run_matching():
         except:
             pass
             
-def setup_scheduler():
+def setup_scheduler():# DB에서 team, team_mission, user_mission 리셋 후 매칭 실행 스케줄러 설정
     # ✅ 한국 시간대(KST) 강제 적용
     os.environ["TZ"] = "Asia/Seoul"
     time.tzset()
 
     print("스케줄러 설정 시작 (Asia/Seoul)")
     # 기존: schedule.every().monday.at("09:00").do(weekly_matching_process)
-    schedule.every().thursday.at("12:00").do(reset_and_run_matching)
+    schedule.every().thursday.at("09:00").do(reset_and_run_matching)
     print("매주 월요일 09:00 (KST)에 [초기화 → 매칭] 실행 예약됨")
 
     while True:
