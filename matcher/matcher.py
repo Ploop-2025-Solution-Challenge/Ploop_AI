@@ -26,8 +26,8 @@ load_dotenv()
 
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
-PINECONE_INDEX = os.getenv("PINECONE_INDEX", "member_embeddings")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT","us-east-1")
+PINECONE_INDEX = os.getenv("PINECONE_INDEX", "member-embeddings")
 
 
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
