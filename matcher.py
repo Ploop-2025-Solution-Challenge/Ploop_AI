@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("matcher")
 
-load_dotenv()
+load_dotenv() #.env 파일에서 환경변수 로드
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "member-embeddings")
@@ -290,48 +290,48 @@ def weekly_matching_process(connection=None, pinecone_index=None):
 # ---------------------------
 # 신규 유저 등록 처리
 # ---------------------------
-def process_new_user(new_user_id, mysql_connection=None, pinecone_index=None):
-    """
-    요구사항에 따라 waiting(대기열) 사용 없음.
-    - 신규 유저 임베딩 생성 및 Pinecone에 업서트만 수행
-    - 즉시 매칭 시도/대기열 편입 없음
-    """
-    logger.info(f"새 유저 처리 시작: {new_user_id}, {datetime.now()}")
+# def process_new_user(new_user_id, mysql_connection=None, pinecone_index=None):
+#     """
+#     요구사항에 따라 waiting(대기열) 사용 없음.
+#     - 신규 유저 임베딩 생성 및 Pinecone에 업서트만 수행
+#     - 즉시 매칭 시도/대기열 편입 없음
+#     """
+#     logger.info(f"새 유저 처리 시작: {new_user_id}, {datetime.now()}")
 
-    close_conn = False
-    if mysql_connection is None:
-        mysql_connection = get_mysql_connection()
-        close_conn = True
-    if pinecone_index is None:
-        pinecone_index = init_pinecone()
+#     close_conn = False
+#     if mysql_connection is None:
+#         mysql_connection = get_mysql_connection()
+#         close_conn = True
+#     if pinecone_index is None:
+#         pinecone_index = init_pinecone()
 
-    try:
-        # 새 유저 데이터 로드
-        new_user = get_single_user(new_user_id, mysql_connection)
-        if not new_user:
-            raise ValueError(f"user {new_user_id} not found")
+#     try:
+#         # 새 유저 데이터 로드
+#         new_user = get_single_user(new_user_id, mysql_connection)
+#         if not new_user:
+#             raise ValueError(f"user {new_user_id} not found")
 
-        # 새 유저 임베딩 생성 & 업서트
-        model = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
-        emb_text = prepare_text_for_embedding(new_user)
-        new_emb = model.encode([emb_text])[0]
+#         # 새 유저 임베딩 생성 & 업서트
+#         model = SentenceTransformer("paraphrase-multilingual-mpnet-base-v2")
+#         emb_text = prepare_text_for_embedding(new_user)
+#         new_emb = model.encode([emb_text])[0]
 
-        pinecone_index.upsert(
-            vectors=[{
-                "id": str(new_user_id),
-                "values": new_emb.tolist(),
-                "metadata": {"updated_at": datetime.now().isoformat()}
-            }]
-        )
+#         pinecone_index.upsert(
+#             vectors=[{
+#                 "id": str(new_user_id),
+#                 "values": new_emb.tolist(),
+#                 "metadata": {"updated_at": datetime.now().isoformat()}
+#             }]
+#         )
 
-        logger.info(f"새 유저 {new_user_id} 임베딩 저장 완료 (waiting 미사용)")
-        logger.info(f"새 유저 처리 완료: {new_user_id}, {datetime.now()}")
-    except Exception as e:
-        logger.error(f"새 유저 처리 오류: {str(e)}")
-        raise
-    finally:
-        if close_conn and mysql_connection:
-            mysql_connection.close()
+#         logger.info(f"새 유저 {new_user_id} 임베딩 저장 완료 (waiting 미사용)")
+#         logger.info(f"새 유저 처리 완료: {new_user_id}, {datetime.now()}")
+#     except Exception as e:
+#         logger.error(f"새 유저 처리 오류: {str(e)}")
+#         raise
+#     finally:
+#         if close_conn and mysql_connection:
+#             mysql_connection.close()
 
 
 # ---------------------------

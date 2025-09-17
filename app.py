@@ -25,7 +25,7 @@ import os
 import tempfile
 import base64
 from matcher import (
-    process_new_user,
+    # process_new_user, # ⬅️ process_new_user 사용 안 함 (주석)
     init_pinecone,
     get_mysql_connection,
     # setup_scheduler,            # ⬅️ 스케줄러 사용 안 함 (주석)
@@ -74,20 +74,20 @@ class NewUserRequest(BaseModel):
 #     scheduler_thread.daemon = True
 #     scheduler_thread.start()
 
-@app.post("/api/new_user")
-async def handle_new_user(request: NewUserRequest):
-    if not request.user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
+# @app.post("/api/new_user")
+# async def handle_new_user(request: NewUserRequest):
+#     if not request.user_id:
+#         raise HTTPException(status_code=400, detail="user_id required")
 
-    try:
-        mysql_conn = get_mysql_connection()
-        pinecone_idx = init_pinecone()
-        process_new_user(request.user_id, mysql_conn, pinecone_idx)
-        mysql_conn.close()
-        return {"status": "success", "message": "User processed successfully"}
-    except Exception as e:
-        # 에러는 fail 형태로 반환해도 되지만 기존 엔드포인트는 유지
-        raise HTTPException(status_code=500, detail=str(e))
+#     try:
+#         mysql_conn = get_mysql_connection()
+#         pinecone_idx = init_pinecone()
+#         process_new_user(request.user_id, mysql_conn, pinecone_idx)
+#         mysql_conn.close()
+#         return {"status": "success", "message": "User processed successfully"}
+#     except Exception as e:
+#         # 에러는 fail 형태로 반환해도 되지만 기존 엔드포인트는 유지
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ 매칭 알고리즘 수동 실행 (POST로만 트리거)
@@ -200,4 +200,4 @@ async def detect_endpoint(req: Request):
 
 if __name__ == "__main__":
     # 로컬 실행
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000)
