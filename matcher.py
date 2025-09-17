@@ -267,7 +267,7 @@ def setup_scheduler():
     time.tzset()
 
     print("스케줄러 설정 시작 (Asia/Seoul)")
-    schedule.every().thursday.at("02:50").do(weekly_matching_process)  # 한국 시간 월요일 02:50
+    schedule.every().thursday.at("03:00").do(weekly_matching_process)  # 한국 시간 월요일 02:50
     print("매주 월요일 02:50 (KST)에 매칭 실행 예약됨")
 
     while True:
